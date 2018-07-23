@@ -1,0 +1,12 @@
+version: 0.0
+Resources:
+  - myLambdaFunction:
+      Type: AWS::Lambda::Function
+      Properties:
+        Name: "removeSnapshots"
+        Alias: "removeSnapshots"
+        CurrentVersion: "0"
+        TargetVersion: "1"
+Hooks:
+    - BeforeAllowTraffic: "LambdaFunctionToValidateBeforeTrafficShift"
+    - AfterAllowTraffic: "LambdaFunctionToValidateAfterTrafficShift"
