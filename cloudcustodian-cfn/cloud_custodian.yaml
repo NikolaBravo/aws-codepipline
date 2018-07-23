@@ -1,0 +1,270 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: AWS CodeCommit CodePipeline and CodeDeploy pipeline template for tagging enforcement
+Parameters:
+  SubnetIds:
+    Description: Subnets where you want this server to be deployed
+    Type: List<AWS::EC2::Subnet::Id>
+  Keyname:
+    Description: EC2 Keyname
+    Type: AWS::EC2::KeyPair::KeyName
+  InstanceType:
+    Description: Instance Type
+    Type: String
+    Default: t2.micro
+    AllowedValues: [t2.micro, t2.small, t2.medium, m4.small, m4.large]
+    ConstraintDescription: Must be a valid instance type
+  EmailAddress:
+    Description: Custodian requires an email address for sending emails
+    Type: String
+Mappings:
+  RegionMap:
+    us-west-2:
+      AMIAmz: ami-1e299d7e
+    us-east-1:
+      AMIAmz: ami-0b33d91d
+Resources:
+  ServerGroup:
+    Type: "AWS::AutoScaling::AutoScalingGroup"
+    Properties:
+      LaunchConfigurationName:
+        Ref: LaunchConfig
+      MinSize: 1
+      MaxSize: 1
+      VPCZoneIdentifier: !Ref SubnetIds
+      Tags:
+        - Key: Name
+          Value: !Ref AWS::StackName
+          PropagateAtLaunch: true
+
+  LaunchConfig:
+    Type: "AWS::AutoScaling::LaunchConfiguration"
+    Metadata:
+      AWS::CloudFormation::Init:
+        configSets:
+          ec2_setup:
+            - config1
+            - config2
+        config1:
+          packages:
+            yum:
+              wget: []
+              git: []
+          files:
+            /etc/cfn/cfn-hup.conf:
+              content:
+                Fn::Join:
+                  - ""
+                  - - "[main]\n"
+                    - "stack="
+                    - !Ref "AWS::StackId"
+                    - "\n"
+                    - "region="
+                    - !Ref "AWS::Region"
+                    - "\n"
+              mode: "000400"
+              owner: "root"
+              group: "root"
+            /etc/cfn/hooks.d/cfn-auto-reloader.conf:
+              content:
+                Fn::Join:
+                  - ""
+                  - - "[cfn-auto-reloader-hook]\n"
+                    - "triggers=post.update\n"
+                    - "path=Resources.LaunchConfig.Metadata.AWS::CloudFormation::Init\n"
+                    - "action=/opt/aws/bin/cfn-init -v "
+                    - "         --stack "
+                    - !Ref "AWS::StackName"
+                    - "         --resource LaunchConfig "
+                    - "         --region "
+                    - !Ref "AWS::Region"
+                    - "\n"
+                    - "runas=root\n"
+          commands:
+            make_config_dir:
+              command: "mkdir /opt/custodian_policies"
+              test: "test ! -e /opt/custodian_policies"
+            checkout_cloud_custodian:
+              cwd: /opt
+              command: "git clone https://github.com/capitalone/cloud-custodian.git"
+              test: "test ! -e /opt/cloud-custodian"
+          services:
+            sysvinit:
+              cfn-hup:
+                enabled: "true"
+                ensureRunning: "true"
+                files:
+                  - "/etc/cfn/cfn-hup.conf"
+                  - "/etc/cfn/hooks.d/cfn-auto-reloader.conf"
+        config2:
+          files:
+            /opt/custodian_policies/mailer.yml:
+              content: !Join ['', ['queue_url: ', !Ref CloudCustodianSQS,
+                  '
+
+                    ', 'role: ', !GetAtt [LambdaExecutionRole, Arn], '
+
+                    ', 'from_address: ', !Ref EmailAddress, '
+
+                    ', 'memory: ', 256, '
+
+                    ', 'timeout: ', 180, '
+
+                    ', 'region: ', !Ref 'AWS::Region']]
+              mode: "000644"
+              owner: "root"
+              group: "root"
+            /opt/custodian_policies/mailer.sh:
+              content: !Sub |
+                #! /bin/bash
+                cd /opt/cloud-custodian/tools
+                virtualenv c7n_mailer
+                source c7n_mailer/bin/activate
+                cd c7n_mailer
+                pip install -r requirements.txt
+                python setup.py develop
+                c7n-mailer --config /opt/custodian_policies/mailer.yml --update-lambda
+              mode: "000744"
+              owner: "root"
+              group: "root"
+          #   installing_c7n_mailer:
+          #     command: "/opt/custodian_policies/mailer.sh"
+
+    Properties:
+      ImageId:
+        Fn::FindInMap:
+          - RegionMap
+          - Ref: AWS::Region
+          - AMIAmz
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref Keyname
+      IamInstanceProfile: !Ref InstanceProfile
+      SecurityGroups:
+        - !GetAtt [InstanceSecurityGroup, GroupId]
+      UserData:
+        Fn::Base64:
+          Fn::Join:
+          - ''
+          - - "#!/bin/bash -xe\n"
+            - "# Install the files and packages from the metadata\n"
+            - "/opt/aws/bin/cfn-init -v "
+            - "         --stack "
+            -           !Ref AWS::StackName
+            - "         --resource LaunchConfig "
+            - "         --region "
+            -           !Ref AWS::Region
+            - "         --configsets ec2_setup"
+            - "\n"
+            - "yum install jq -y\n"
+            - "# Installing custodian mailer lambda function\n"
+            - "/opt/custodian_policies/mailer.sh"
+            - "\n"
+    DependsOn: InstanceProfile
+  InstanceSecurityGroup:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      GroupDescription: "Enable SSH access"
+      SecurityGroupIngress:
+       - IpProtocol: tcp
+         FromPort: '22'
+         ToPort: '22'
+         CidrIp: 0.0.0.0/0
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${AWS::StackName}-InstanceRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/ReadOnlyAccess
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action: ['sts:AssumeRole']
+          Effect: Allow
+          Principal:
+            Service: [ec2.amazonaws.com]
+        Version: '2012-10-17'
+      Path: /
+      Policies:
+        - PolicyName: custodian
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Action:
+                  - 'lambda:*'
+                  - 'events:*'
+                  - 'iam:ListInstanceProfiles'
+                Effect: Allow
+                Resource: '*'
+              - Action:
+                - 'iam:PassRole'
+                Effect: Allow
+                Resource: !GetAtt LambdaExecutionRole.Arn
+  InstanceProfile:
+    Type: "AWS::IAM::InstanceProfile"
+    Properties:
+      Path: "/"
+      Roles:
+        - !Ref InstanceRole
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${AWS::StackName}-LambdaRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action: ['sts:AssumeRole']
+          Effect: Allow
+          Principal:
+            Service: [lambda.amazonaws.com]
+        Version: '2012-10-17'
+      Path: /
+      Policies:
+        - PolicyName: LambdaPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Action:
+                  - 'sqs:ChangeMessageVisibility'
+                  - 'sqs:DeleteMessage'
+                  - 'sqs:GetQueueAttributes'
+                  - 'sqs:ReceiveMessage'
+                  - 'sqs:SendMessage'
+                  - 'ses:*'
+                  - 'ec2:CreateTags'
+                  - 'ec2:DeleteTags'
+                  - 'ec2:DescribeInstanceStatus'
+                  - 'ec2:DescribeInstances'
+                  - 'ec2:DescribeTags'
+                Effect: Allow
+                Resource: '*'
+
+  CloudCustodianSQS:
+    Type: "AWS::SQS::Queue"
+    Properties:
+      QueueName: !Ref AWS::StackName
+      ReceiveMessageWaitTimeSeconds: 20
+  CloudCustodianSQSPolicy:
+    Type: "AWS::SQS::QueuePolicy"
+    Properties:
+      PolicyDocument:
+        Version: "2012-10-17"
+        Id: "CloudCustodianSQS Policy"
+        Statement:
+          - Action:
+            - 'sqs:SendMessage'
+            - 'sqs:ReceiveMessage'
+            Effect: Allow
+  # ***** FIX PERMISSION HERE ******
+            Principal:
+              AWS: "*"
+            Resource:
+              - !GetAtt [CloudCustodianSQS, Arn]
+      Queues: [ !Ref CloudCustodianSQS]
+
+Outputs:
+  QueueName:
+    Description: SQS queue. Update custodian policy file using this URL
+    Value: !Ref CloudCustodianSQS
+  LambdaRole:
+    Description: ARN for LambdaRole
+    Value: !GetAtt [LambdaExecutionRole, Arn]

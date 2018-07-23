@@ -1,0 +1,8 @@
+{
+	"databaseconfig": {
+		"dbhost": "guardduty-findings.cgybjw07ccvi.us-east-1.rds.amazonaws.com",
+		"dbusername": "guardduty",
+		"dbpassword": "gdfindings!",
+		"dbport": "3306"
+	}
+}

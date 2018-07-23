@@ -1,0 +1,223 @@
+policies:
+- name: tag-compliance
+  resource: ec2
+  description: |
+    Scan for resources that do not meet tag compliance policies.
+  filters:
+    - "tag:Environment": absent
+    - "tag:CreatedBy": absent
+    - "tag:Project": absent
+  actions:
+    - type: notify
+      template: default.html
+      subject: EC2 Resources Missing Tags
+      violation_desc: "The following EC2 instances are missing required Tags"
+      to:
+        - <EMAIL_ADDRESS>
+      transport:
+        type: sqs
+        queue: <SQS URL>
+
+- name: s3TagPolicy
+  description: |
+    Scan through all s3 buckets in an account and check for global grants.
+  resource: s3
+  filters:
+    - "tag:CreatedBy": absent
+    - "tag:Project": absent
+  actions:
+    - type: notify
+      template: default.html
+      subject: S3 Buckets issing Tags
+      violation_desc: "The following S3 buckets are missing required Tags"
+      to:
+        - <EMAIL_ADDRESS>
+      transport:
+        type: sqs
+        queue: <SQS URL>
+
+- name: account-cloudtrail-enabled
+  description: |
+    Check account to see if cloudtrail is enabled for the account
+  resource: account
+  region: us-west-2
+  filters:
+    - type: check-cloudtrail
+      global-events: true
+      multi-region: true
+      running: true
+  actions:
+    - type: notify
+      template: default.html
+      subject: Cloudtail not enabled
+      violation_desc: "The following accounts don't have cloudtrail enabled"
+      to:
+        - <EMAIL_ADDRESS>
+      transport:
+        type: sqs
+        queue: <SQS_URL>
+
+- name: rds-public-access
+  resource: rds
+  filters:
+    - PubliclyAccessible: true
+  actions:
+    - type: notify
+      template: default.html
+      subject: RDS in Default VPC
+      violation_desc: "The following RDS are publically accessible"
+      to:
+        - <EMAIL_ADDRESS>
+      transport:
+        type: sqs
+        queue: <SQS_URL>
+
+# - name: SecurityGroup-ssh-open-world
+#   description: |
+#     Report SecurityGroups that allow inbound to port 22 from 0.0.0.0
+#   resource: security-group
+#   filters:
+#     - type: ingress
+#       OnlyPorts: [22]
+#       Cidr: {"value": "0.0.0.0/0"}
+#   actions:
+#     - type: notify
+#       template: default.html
+#       subject: Wide open SSH security group
+#       violation_desc: "The following SSH SecurityGroups are accessible from outside"
+#       to:
+#         - <EMAIL_ADDRESS>
+#       transport:
+#         type: sqs
+#         queue: <SQS_URL>
+- name: wide-open-roles
+  description: IAM Roles with wide open access
+  resource: iam-policy
+  filters:
+    - type: used
+    - type: has-allow-all
+    - type: value
+      key: PolicyName
+      value: AdministartorAccess
+  actions:
+    - type: notify
+      template: default.html
+      subject: Roles with wide open access
+      violation_desc: "The following roles has broad aws access"
+      to:
+        - <EMAIL_ADDRESS>
+      transport:
+        type: sqs
+        queue: <SQS_URL>
+- name: users-not-logged
+  description: Users with password that hasn't logged in for defined duration
+  resource: iam-user
+  filters:
+    - type: credential
+      key: password_last_used
+      value_type: age
+      value: 30
+      op: greater-than
+  actions:
+    - type: notify
+      template: default.html
+      subject: Users who haven't logged in more than 30 days
+      violation_desc: "Users who haven't logged in more than 30 days"
+      to:
+        - <EMAIL_ADDRESS>
+      transport:
+        type: sqs
+        queue: <SQS_URL>
+- name: access_key_rotation
+  description: Access keys that haven't rotated
+  resource: iam-user
+  filters:
+    - type: credential
+      key: access_keys.last_rotated
+      value_type: age
+      value: 90
+      op: greater-than
+  actions:
+    - type: notify
+      template: default.html
+      subject: Access keys that hasn't rotated for more than 90 days
+      violation_desc: "Access keys that hasn't rotated for more than 90 days"
+      to:
+        - <EMAIL_ADDRESS>
+      transport:
+        type: sqs
+        queue: <SQS_URL>
+- name: unused_iam_roles
+  description: Unused IAM Roles
+  resource: iam-role
+  filters:
+    - type: unused
+  actions:
+    - type: notify
+      template: default.html
+      subject: unused iam roles
+      violation_desc: "unused IAM roles"
+      to:
+        - <EMAIL_ADDRESS>
+      transport:
+        type: sqs
+        queue: <SQS_URL>
+# - name: ec2-auto-tag
+#   description: Tag EC2 instance
+#   resource: ec2
+#   mode:
+#     type: cloudtrail
+#     events:
+#       - RunInstances
+#     role: arn:aws:iam::317816552148:role/Taggingtest3-LambdaRole
+#   actions:
+#     - type: auto-tag-user
+#       tag: CreatedBy
+# #      update: true
+#     - type: notify
+#       template: default.html
+#       subject: Added tag to ec2 instance
+#       violation_desc: "EC2 instance was created without 'CreatedBy' tag"
+#       to:
+#         - <EMAIL_ADDRESS>
+#       transport:
+#         type: sqs
+#         queue: <SQS_URL>
+- name: S3_logging_not_enabled
+  description: Check S3 buckets to see if logging is enabled
+  resource: s3
+  filters:
+    - not:
+      - type: value
+        key: Logging
+        value: not-null
+  actions:
+    - type: notify
+      template: default.html
+      subject: S3 bucket logging not enabled
+      violation_desc: "S3 bucket logging not enabled"
+      to:
+        - <EMAIL_ADDRESS>
+      transport:
+        type: sqs
+        queue: <SQS_URL>
+- name: SecurityGroup-with-open-access
+  description: |
+    Report SecurityGroups that allow inbound access from 0.0.0.0
+  resource: security-group
+  filters:
+    - type: ingress
+      Cidr: {
+        value: '0.0.0.0',
+        op: in,
+        value_type: 'cidr'}
+  actions:
+    - type: notify
+      template: default.html
+      subject: Wide open security group
+      violation_desc: "The following SecurityGroups are accessible from outside"
+      to:
+        - <EMAIL_ADDRESS>
+      transport:
+        type: sqs
+        queue: <SQS_URL>
