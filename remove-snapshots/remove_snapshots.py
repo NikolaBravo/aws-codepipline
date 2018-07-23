@@ -10,7 +10,7 @@ from dateutil import parser
 
 client = boto3.client('ec2')
 
-del_hours = 336
+del_hours = 340
 del_seconds = del_hours * 3600
 
 #Used to parse the JSON Serialization for time - REQUIRED
